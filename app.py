@@ -199,7 +199,7 @@ if uploaded_file:
 
         drainage = drainage_from_uscs_percentages(uscs_df, text)
 
-        total_borings, shallow_refusals, pct_refusals = find_refusals(text)
+        total_borings, shallow_refusals, pct_refusals = find_test_pit_refusals(text)
         gw = find_groundwater(text)
 
     st.header("📊 Analysis Results")
