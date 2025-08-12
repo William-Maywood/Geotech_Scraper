@@ -48,26 +48,29 @@ def assess_drainage(text: str) -> str:
     return "Unclear – needs review"
 
 
-def find_refusals(text: str):
+import re
+
+def find_test_pit_refusals(text: str):
     """
-    Count depths explicitly tied to refusal or PWR.
-    Also estimate total borings to compute %.
+    Count test pits with refusal depths under 8 feet.
+    Estimate total number of test pits to compute percentage.
     """
     t = text.lower()
 
-    # depths tied to refusal/PWR context nearby
-    # e.g., "auger refusal at 6 ft", "PWR encountered at 4 ft", "pile driving refusal 5.5 feet"
-    ctx_pat = r'(?:refusal|auger\s*refusal|pile[^.\n]{0,20}?refusal|pwr|partially\s*weathered\s*rock)[^.\n]{0,120}?(\d+(?:\.\d+)?)\s*(?:feet|ft)\b'
-    depths = [float(d) for d in re.findall(ctx_pat, t)]
-    shallow = [d for d in depths if d < 8.0]
+    # Match test pit IDs like "GEO-003", "GEO-101", etc.
+    test_pit_ids = set(re.findall(r'\bgeo-\d{3}\b', t))
 
-    # estimate number of borings in the text
-    # matches: "B-1", "B-26A", "boring B-14", etc.
-    boring_ids = set(re.findall(r'\b(?:boring\s+)?b-?\s*(\d+[a-z]?)\b', t))
-    total_borings = len(boring_ids)
+    # Match refusal depths tied to test pits
+    refusal_pat = r'\bgeo-\d{3}\b[^.\n]{0,100}?(?:refusal)[^.\n]{0,100}?(\d+(?:\.\d+)?)\s*(?:feet|ft)\b'
+    refusal_depths = re.findall(refusal_pat, t)
 
-    pct = round(100 * len(shallow) / total_borings, 1) if total_borings else 0.0
-    return total_borings, len(shallow), pct
+    # Filter shallow refusals
+    shallow = [float(d) for d in refusal_depths if float(d) < 8.0]
+
+    total_pits = len(test_pit_ids)
+    pct = round(100 * len(shallow) / total_pits, 1) if total_pits else 0.0
+
+    return total_pits, len(shallow), pct
 
 def find_groundwater(text: str) -> str:
     t = text.lower()
