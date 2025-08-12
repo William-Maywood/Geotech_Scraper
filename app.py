@@ -172,7 +172,7 @@ def drainage_from_uscs_percentages(uscs_df: pd.DataFrame, fallback_text: str) ->
     )
 
 # ---------------------------
-# NEW: Borings vs CPT sections + shallow refusal counters
+# Borings vs CPT sections + shallow refusal counters (with fallbacks)
 # ---------------------------
 
 def iter_boring_sections(text: str) -> Iterator[Tuple[str, str]]:
@@ -181,7 +181,8 @@ def iter_boring_sections(text: str) -> Iterator[Tuple[str, str]]:
     Matches headers like: 'LOG OF BORING GEO-033'
     """
     pat = re.compile(
-        r'LOG\s+OF\s+BORING\s+(GEO-\d{3})(.*?)(?=LOG\s+OF\s+BORING\s+GEO-\d{3}|LOG\s+OF\s+CPT|CPT\s+(?:SOUNDING|LOG)|Appendix|$)',
+        r'LOG\s+OF\s+BORING\s+(GEO-\d{3})(.*?)(?=LOG\s+OF\s+BORING\s+GEO-\d{3}|'
+        r'LOG\s+OF\s+CPT|CPT\s+(?:SOUNDING|LOG|SOUNDING\s+ID|RESULTS)|Appendix|$)',
         flags=re.IGNORECASE | re.DOTALL
     )
     for m in pat.finditer(text):
@@ -190,15 +191,20 @@ def iter_boring_sections(text: str) -> Iterator[Tuple[str, str]]:
 def iter_cpt_sections(text: str) -> Iterator[Tuple[str, str]]:
     """
     Yield (cpt_id, section_text) for each *CPT sounding* only.
-    Tries several common header styles seen in geo reports/PDF extracts.
-    Examples:
-      'CPT SOUNDING GEO-009'
-      'LOG OF CPT SOUNDING GEO-091'
-      'CPT LOG GEO-046'
-      'CPT Sounding ID  GEO-110'
+    Handles multiple header styles in geo reports/PDF extracts:
+      - 'CPT SOUNDING GEO-009'
+      - 'LOG OF CPT SOUNDING GEO-091'
+      - 'CPT LOG GEO-046'
+      - 'CPT Sounding ID GEO-110'
+      - 'CPT RESULTS GEO-105'
     """
     pat = re.compile(
-        r'(?:LOG\s+OF\s+CPT\s+SOUNDING|CPT\s+(?:SOUNDING|LOG|SOUNDING\s+ID))\s+(GEO-\d{3})(.*?)(?=(?:LOG\s+OF\s+CPT\s+SOUNDING|CPT\s+(?:SOUNDING|LOG|SOUNDING\s+ID))\s+GEO-\d{3}|LOG\s+OF\s+BORING\s+GEO-\d{3}|Appendix|$)',
+        r'(?:LOG\s+OF\s+CPT\s+SOUNDING|'
+        r'CPT\s+(?:SOUNDING|LOG|SOUNDING\s+ID|RESULTS))\s+'
+        r'(GEO-\d{3})'
+        r'(.*?)(?=(?:LOG\s+OF\s+CPT\s+SOUNDING|'
+        r'CPT\s+(?:SOUNDING|LOG|SOUNDING\s+ID|RESULTS))\s+GEO-\d{3}'
+        r'|LOG\s+OF\s+BORING\s+GEO-\d{3}|Appendix|$)',
         flags=re.IGNORECASE | re.DOTALL
     )
     for m in pat.finditer(text):
@@ -227,11 +233,84 @@ def _count_shallow_refusals(sections: Iterator[Tuple[str, str]], threshold_ft: f
     pct = round(100 * shallow / total, 1) if total else 0.0
     return total, shallow, pct, ids_with_depth
 
-def count_boring_refusals_under_8ft(text: str, threshold_ft: float = 8.0):
-    return _count_shallow_refusals(iter_boring_sections(text), threshold_ft)
+# ---------- CPT fallback (image-based logs) ----------
+
+def _cpt_fallback_counts(text: str, threshold_ft: float = 8.0):
+    t = text
+    # (1) total CPTs from narrative like: "CPT soundings were performed at 108 locations"
+    m_total = re.search(r'CPT\s+soundings?\s+(?:were\s+)?performed\s+at\s+(\d+)\s+locations', t, re.IGNORECASE)
+    total = int(m_total.group(1)) if m_total else 0
+
+    # (2) Table 2 block for CPT shallow refusal depths
+    m_tbl = re.search(
+        r'(Table\s*2[^.\n]*?CPT\s+Sounding\s+Shallow\s+Refusal\s+Depths.*?)(?:Table\s*3|3\.\d|Appendix|$)',
+        t, re.IGNORECASE | re.DOTALL
+    )
+    shallow = 0
+    ids_with_depth = {}
+
+    if m_tbl:
+        block = m_tbl.group(1)
+        for sid, depth in re.findall(r'(GEO-\d{3}).{0,80}?(\d+(?:\.\d+)?)\s*(?:feet|ft)?', block, re.IGNORECASE | re.DOTALL):
+            try:
+                d = float(depth)
+                ids_with_depth[sid.upper()] = d
+                if d < threshold_ft:
+                    shallow += 1
+            except ValueError:
+                pass
+
+    pct = round(100 * shallow / (total if total else 1), 1) if total else 0.0
+    return total, shallow, pct, ids_with_depth
 
 def count_cpt_refusals_under_8ft(text: str, threshold_ft: float = 8.0):
-    return _count_shallow_refusals(iter_cpt_sections(text), threshold_ft)
+    # try primary (section-based). if no sections found, use fallback
+    total, shallow, pct, ids = _count_shallow_refusals(iter_cpt_sections(text), threshold_ft)
+    if total == 0:
+        return _cpt_fallback_counts(text, threshold_ft)
+    return total, shallow, pct, ids
+
+# ---------- Boring fallback (image-based logs) ----------
+
+def _boring_fallback_counts(text: str, threshold_ft: float = 8.0):
+    t = text
+
+    # (1) Totals from narrative (design + supplemental)
+    total = 0
+    # e.g., "Soil borings were completed at 20 locations"
+    for m in re.finditer(r'Soil\s+borings?\s+were\s+completed\s+at\s+(\d+)\s+locations', t, re.IGNORECASE):
+        try:
+            total += int(m.group(1))
+        except ValueError:
+            pass
+    # e.g., "A total of six soil borings were completed ..."
+    m_sup = re.search(r'A\s+total\s+of\s+(\d+)\s+soil\s+borings?\s+were?\s+completed', t, re.IGNORECASE)
+    if m_sup:
+        try:
+            total += int(m_sup.group(1))
+        except ValueError:
+            pass
+
+    # (2) Shallow refusal (<8 ft): scan globally for any "GEO-### ... refusal ... X ft"
+    shallow = 0
+    ids_with_depth = {}
+    for sid, depth in re.findall(r'(GEO-\d{3}).{0,120}?refusal[^.\n]{0,120}?(\d+(?:\.\d+)?)\s*(?:feet|ft)', t, re.IGNORECASE | re.DOTALL):
+        try:
+            d = float(depth)
+            ids_with_depth[sid.upper()] = d
+            if d < threshold_ft:
+                shallow += 1
+        except ValueError:
+            pass
+
+    pct = round(100 * shallow / (total if total else 1), 1) if total else 0.0
+    return total, shallow, pct, ids_with_depth
+
+def count_boring_refusals_under_8ft(text: str, threshold_ft: float = 8.0):
+    total, shallow, pct, ids = _count_shallow_refusals(iter_boring_sections(text), threshold_ft)
+    if total == 0:
+        return _boring_fallback_counts(text, threshold_ft)
+    return total, shallow, pct, ids
 
 # ---------------------------
 # Streamlit app
@@ -257,7 +336,7 @@ if uploaded_file:
         # Groundwater
         gw = find_groundwater(text)
 
-        # NEW: refusal (< 8 ft) for borings and CPTs separately
+        # Refusal (< 8 ft) for borings and CPTs separately (with fallbacks)
         bor_total, bor_shallow, bor_pct, bor_depths = count_boring_refusals_under_8ft(text, threshold_ft=8.0)
         cpt_total, cpt_shallow, cpt_pct, cpt_depths = count_cpt_refusals_under_8ft(text, threshold_ft=8.0)
 
