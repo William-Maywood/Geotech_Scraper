@@ -1,11 +1,14 @@
-
 import streamlit as st
 from PyPDF2 import PdfReader
 from docx import Document
 import re
 import pandas as pd
 from collections import Counter
+from typing import Iterator, Tuple
 
+# ---------------------------
+# File extractors
+# ---------------------------
 
 def extract_text_pdf(file) -> str:
     """Fast, resilient text extraction from PDF (no OCR)."""
@@ -22,6 +25,10 @@ def extract_text_pdf(file) -> str:
 def extract_text_docx(file) -> str:
     doc = Document(file)
     return "\n".join(p.text for p in doc.paragraphs if p.text)
+
+# ---------------------------
+# Soil drainage helpers
+# ---------------------------
 
 USCS_DRAIN = {
   "GW":"Excellent","SW":"Excellent","GP":"Good","SP":"Good",
@@ -47,30 +54,9 @@ def assess_drainage(text: str) -> str:
         return "Likely well-draining (keyword inference)"
     return "Unclear – needs review"
 
-
-import re
-
-def find_test_pit_refusals(text: str):
-    """
-    Count test pits with refusal depths under 8 feet.
-    Estimate total number of test pits to compute percentage.
-    """
-    t = text.lower()
-
-    # Match test pit IDs like "GEO-003", "GEO-101", etc.
-    test_pit_ids = set(re.findall(r'\bgeo-\d{3}\b', t))
-
-    # Match refusal depths tied to test pits
-    refusal_pat = r'\bgeo-\d{3}\b[^.\n]{0,100}?(?:refusal)[^.\n]{0,100}?(\d+(?:\.\d+)?)\s*(?:feet|ft)\b'
-    refusal_depths = re.findall(refusal_pat, t)
-
-    # Filter shallow refusals
-    shallow = [float(d) for d in refusal_depths if float(d) < 8.0]
-
-    total_pits = len(test_pit_ids)
-    pct = round(100 * len(shallow) / total_pits, 1) if total_pits else 0.0
-
-    return total_pits, len(shallow), pct
+# ---------------------------
+# Groundwater detector
+# ---------------------------
 
 def find_groundwater(text: str) -> str:
     t = text.lower()
@@ -97,6 +83,10 @@ def find_groundwater(text: str) -> str:
         return "No"
 
     return "No"  # default conservative
+
+# ---------------------------
+# USCS parsing + drainage summary
+# ---------------------------
 
 USCS_NAMES = {
     "GW":"Well-graded gravel", "GP":"Poorly graded gravel",
@@ -135,7 +125,6 @@ def extract_uscs_frequencies(text: str, collapse_compounds: bool = True):
             "Percent": round(100 * cnt / total, 2)
         })
     return pd.DataFrame(rows)
-
 
 BUCKET = {
     "GW":"excellent", "SW":"excellent",
@@ -182,6 +171,72 @@ def drainage_from_uscs_percentages(uscs_df: pd.DataFrame, fallback_text: str) ->
         f"very poor {totals['very_poor']:.1f}%, unstable {totals['unstable']:.1f}%"
     )
 
+# ---------------------------
+# NEW: Borings vs CPT sections + shallow refusal counters
+# ---------------------------
+
+def iter_boring_sections(text: str) -> Iterator[Tuple[str, str]]:
+    """
+    Yield (boring_id, section_text) for each *soil boring* only.
+    Matches headers like: 'LOG OF BORING GEO-033'
+    """
+    pat = re.compile(
+        r'LOG\s+OF\s+BORING\s+(GEO-\d{3})(.*?)(?=LOG\s+OF\s+BORING\s+GEO-\d{3}|LOG\s+OF\s+CPT|CPT\s+(?:SOUNDING|LOG)|Appendix|$)',
+        flags=re.IGNORECASE | re.DOTALL
+    )
+    for m in pat.finditer(text):
+        yield m.group(1).upper(), m.group(2)
+
+def iter_cpt_sections(text: str) -> Iterator[Tuple[str, str]]:
+    """
+    Yield (cpt_id, section_text) for each *CPT sounding* only.
+    Tries several common header styles seen in geo reports/PDF extracts.
+    Examples:
+      'CPT SOUNDING GEO-009'
+      'LOG OF CPT SOUNDING GEO-091'
+      'CPT LOG GEO-046'
+      'CPT Sounding ID  GEO-110'
+    """
+    pat = re.compile(
+        r'(?:LOG\s+OF\s+CPT\s+SOUNDING|CPT\s+(?:SOUNDING|LOG|SOUNDING\s+ID))\s+(GEO-\d{3})(.*?)(?=(?:LOG\s+OF\s+CPT\s+SOUNDING|CPT\s+(?:SOUNDING|LOG|SOUNDING\s+ID))\s+GEO-\d{3}|LOG\s+OF\s+BORING\s+GEO-\d{3}|Appendix|$)',
+        flags=re.IGNORECASE | re.DOTALL
+    )
+    for m in pat.finditer(text):
+        yield m.group(1).upper(), m.group(2)
+
+REFUSAL_NUM_PAT = re.compile(
+    r'\brefusal[^.\n]{0,160}?(\d+(?:\.\d+)?)\s*(?:feet|ft)\b',
+    flags=re.IGNORECASE
+)
+
+def _count_shallow_refusals(sections: Iterator[Tuple[str, str]], threshold_ft: float = 8.0):
+    total = 0
+    shallow = 0
+    ids_with_depth = {}
+    for sid, sec in sections:
+        total += 1
+        m = REFUSAL_NUM_PAT.search(sec)
+        if m:
+            try:
+                depth = float(m.group(1))
+                ids_with_depth[sid] = depth
+                if depth < threshold_ft:
+                    shallow += 1
+            except ValueError:
+                pass
+    pct = round(100 * shallow / total, 1) if total else 0.0
+    return total, shallow, pct, ids_with_depth
+
+def count_boring_refusals_under_8ft(text: str, threshold_ft: float = 8.0):
+    return _count_shallow_refusals(iter_boring_sections(text), threshold_ft)
+
+def count_cpt_refusals_under_8ft(text: str, threshold_ft: float = 8.0):
+    return _count_shallow_refusals(iter_cpt_sections(text), threshold_ft)
+
+# ---------------------------
+# Streamlit app
+# ---------------------------
+
 st.set_page_config(page_title="Geotechnical Report Analyzer", layout="centered")
 st.title("📑 Geotechnical Report Analyzer")
 
@@ -195,17 +250,29 @@ if uploaded_file:
         else:
             text = extract_text_docx(uploaded_file)
 
+        # USCS / drainage
         uscs_df = extract_uscs_frequencies(text, collapse_compounds=True)
-
         drainage = drainage_from_uscs_percentages(uscs_df, text)
 
-        total_borings, shallow_refusals, pct_refusals = find_test_pit_refusals(text)
+        # Groundwater
         gw = find_groundwater(text)
+
+        # NEW: refusal (< 8 ft) for borings and CPTs separately
+        bor_total, bor_shallow, bor_pct, bor_depths = count_boring_refusals_under_8ft(text, threshold_ft=8.0)
+        cpt_total, cpt_shallow, cpt_pct, cpt_depths = count_cpt_refusals_under_8ft(text, threshold_ft=8.0)
 
     st.header("📊 Analysis Results")
     st.write(f"**Porous/Well-Draining Soils?** → `{drainage}`")
-    st.write(f"**Shallow Refusals (< 8 ft)?** → `{shallow_refusals} of {total_borings} borings` ({pct_refusals}%)")
     st.write(f"**Groundwater Shallower Than 5 ft?** → `{gw}`")
+
+    st.subheader("📏 Refusal Summary (< 8 ft)")
+    st.write(f"**Borings:** `{bor_shallow} of {bor_total}` ({bor_pct}%)")
+    st.write(f"**CPTs:** `{cpt_shallow} of {cpt_total}` ({cpt_pct}%)")
+
+    # Optional debug
+    if st.checkbox("Show parsed refusal depths (debug)"):
+        st.write({"borings": bor_depths})
+        st.write({"cpts": cpt_depths})
 
     st.subheader("🧱 Most Common USCS Soils in Report")
     if uscs_df.empty:
@@ -213,4 +280,4 @@ if uploaded_file:
     else:
         st.dataframe(uscs_df, use_container_width=True)
 
-    st.info("Answers are inferred from extracted text. For high-stakes decisions, verify with boring logs/appendices.")
+    st.info("Answers are inferred from extracted text. For high-stakes decisions, verify with boring/CPT logs in the appendices.")
