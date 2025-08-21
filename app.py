@@ -6,22 +6,13 @@ import pandas as pd
 from collections import Counter
 from typing import Iterator, Tuple
 
-# Extract the file pls
-
 def extract_text_pdf(file) -> str:
-    """Fast, resilient text extraction from PDF (no OCR)."""
     reader = PdfReader(file)
-    chunks = []
-    for i, page in enumerate(reader.pages):
-        txt = page.extract_text() or ""
-        chunks.append(txt)
-    return "\n".join(chunks)
+    return "\n".join((page.extract_text() or "") for page in reader.pages)
 
 def extract_text_docx(file) -> str:
     doc = Document(file)
     return "\n".join(p.text for p in doc.paragraphs if p.text)
-
-# Soild Drain stuff
 
 USCS_DRAIN = {
   "GW":"Excellent","SW":"Excellent","GP":"Good","SP":"Good",
@@ -36,7 +27,7 @@ def assess_drainage(text: str) -> str:
     found = set(re.findall(r'\b(GW|SW|GP|SP|GM|SM|GC|SC|ML|CL|MH|CH|OL|OH|PT)\b', tU))
     if found:
         qualities = [USCS_DRAIN[c] for c in found]
-        overall = min(qualities, key=lambda q: RANK[q])  # worst-case overall
+        overall = min(qualities, key=lambda q: RANK[q])
         return f"Mix ({', '.join(sorted(found))}) → overall {overall}"
     t = text.lower()
     if any(x in t for x in ["silty clay", "mh", "ml", "high plasticity", "low permeability"]):
@@ -44,8 +35,6 @@ def assess_drainage(text: str) -> str:
     if any(x in t for x in ["sand", "gravel", "well-draining", "high permeability"]):
         return "Likely well-draining (keyword inference)"
     return "Unclear – needs review"
-
-# Grounwater detect pls
 
 def find_groundwater(text: str) -> str:
     t = text.lower()
@@ -56,26 +45,21 @@ def find_groundwater(text: str) -> str:
     m = re.search(r'(groundwater|water table)[^.\n]{0,60}?(\d+(?:\.\d+)?)\s*ft', t, re.IGNORECASE)
     if m:
         try:
-            depth = float(m.group(2))
-            return "Yes" if depth < 5.0 else "No"
+            return "Yes" if float(m.group(2)) < 5.0 else "No"
         except:
             pass
     if re.search(r'(water table|groundwater)[^.\n]{0,60}?(exceeds|>\s*|greater than)\s*6(\.5)?\s*ft', t):
         return "No"
     return "No"
 
-# ---------------------------
-# tHE SOIL STUFF
-
 USCS_NAMES = {
-    "GW":"Well-graded gravel", "GP":"Poorly graded gravel",
-    "GM":"Silty gravel", "GC":"Clayey gravel",
-    "SW":"Well-graded sand", "SP":"Poorly graded sand",
-    "SM":"Silty sand", "SC":"Clayey sand",
-    "ML":"Low-plasticity silt", "CL":"Low-plasticity clay",
-    "MH":"High-plasticity silt", "CH":"High-plasticity clay",
-    "OL":"Organic silt/clay", "OH":"Organic clay",
-    "PT":"Peat (organic)"
+    "GW":"Well-graded gravel","GP":"Poorly graded gravel",
+    "GM":"Silty gravel","GC":"Clayey gravel",
+    "SW":"Well-graded sand","SP":"Poorly graded sand",
+    "SM":"Silty sand","SC":"Clayey sand",
+    "ML":"Low-plasticity silt","CL":"Low-plasticity clay",
+    "MH":"High-plasticity silt","CH":"High-plasticity clay",
+    "OL":"Organic silt/clay","OH":"Organic clay","PT":"Peat (organic)"
 }
 USCS_PATTERN = r'\b(?:SC-SM|GW|GP|GM|GC|SW|SP|SM|SC|ML|CL|MH|CH|OL|OH|PT)\b'
 
@@ -91,36 +75,32 @@ def extract_uscs_frequencies(text: str, collapse_compounds: bool = True):
     counts = Counter([c for c in expanded if c in USCS_NAMES])
     total = sum(counts.values())
     if total == 0:
-        return pd.DataFrame(columns=["USCS Code", "Soil Name", "Count", "Percent"])
-    rows = []
-    for code, cnt in counts.most_common():
-        rows.append({
-            "USCS Code": code,
-            "Soil Name": USCS_NAMES.get(code, ""),
-            "Count": cnt,
-            "Percent": round(100 * cnt / total, 2)
-        })
+        return pd.DataFrame(columns=["USCS Code","Soil Name","Count","Percent"])
+    rows = [{
+        "USCS Code": code,
+        "Soil Name": USCS_NAMES.get(code,""),
+        "Count": cnt,
+        "Percent": round(100*cnt/total,2)
+    } for code, cnt in counts.most_common()]
     return pd.DataFrame(rows)
 
 BUCKET = {
-    "GW":"excellent", "SW":"excellent",
-    "GP":"good",      "SP":"good",
-    "GM":"moderate",  "SM":"moderate",
-    "GC":"poor", "SC":"poor", "ML":"poor", "CL":"poor",
-    "MH":"very_poor", "CH":"very_poor",
-    "OL":"unstable",  "OH":"unstable", "PT":"unstable",
+    "GW":"excellent","SW":"excellent",
+    "GP":"good","SP":"good",
+    "GM":"moderate","SM":"moderate",
+    "GC":"poor","SC":"poor","ML":"poor","CL":"poor",
+    "MH":"very_poor","CH":"very_poor",
+    "OL":"unstable","OH":"unstable","PT":"unstable",
 }
 
 def drainage_from_uscs_percentages(uscs_df: pd.DataFrame, fallback_text: str) -> str:
     if uscs_df.empty or "Percent" not in uscs_df.columns:
         return assess_drainage(fallback_text)
-    totals = {"excellent":0.0,"good":0.0,"moderate":0.0,"poor":0.0,"very_poor":0.0,"unstable":0.0}
+    totals = {k:0.0 for k in ["excellent","good","moderate","poor","very_poor","unstable"]}
     for _, row in uscs_df.iterrows():
-        code = str(row["USCS Code"])
-        pct  = float(row["Percent"])
-        cat  = BUCKET.get(code)
+        cat = BUCKET.get(str(row["USCS Code"]))
         if cat:
-            totals[cat] += pct
+            totals[cat] += float(row["Percent"])
     bad = totals["poor"] + totals["very_poor"] + totals["unstable"]
     ok  = totals["excellent"] + totals["good"]
     mid = totals["moderate"]
@@ -139,17 +119,9 @@ def drainage_from_uscs_percentages(uscs_df: pd.DataFrame, fallback_text: str) ->
         f"very poor {totals['very_poor']:.1f}%, unstable {totals['unstable']:.1f}%"
     )
 
-# ---------------------------
-# Borings only: PLEASE WORKKKK WRFNWEJF!
-
 def iter_boring_sections(text: str) -> Iterator[Tuple[str, str]]:
-    """
-    Yield (boring_id, section_text) for each *soil boring* only.
-    Matches headers like: 'LOG OF BORING GEO-033'
-    """
     pat = re.compile(
-        r'LOG\s+OF\s+BORING\s+(GEO-\d{3})(.*?)(?=LOG\s+OF\s+BORING\s+GEO-\d{3}|'
-        r'Appendix|$)',
+        r'LOG\s+OF\s+BORING\s+(GEO-\d{3})(.*?)(?=LOG\s+OF\s+BORING\s+GEO-\d{3}|Appendix|$)',
         flags=re.IGNORECASE | re.DOTALL
     )
     for m in pat.finditer(text):
@@ -179,11 +151,6 @@ def _count_shallow_refusals_borings(text: str, threshold_ft: float = 8.0):
     return total, shallow, pct, ids_with_depth
 
 def _boring_fallback_counts(text: str, threshold_ft: float = 8.0):
-    """
-    Fallback for image-only logs:
-    - Sum totals from narrative lines.
-    - Scan whole doc for 'GEO-### ... refusal ... X ft'.
-    """
     t = text
     total = 0
     for m in re.finditer(r'Soil\s+borings?\s+were\s+completed\s+at\s+(\d+)\s+locations', t, re.IGNORECASE):
@@ -197,7 +164,6 @@ def _boring_fallback_counts(text: str, threshold_ft: float = 8.0):
             total += int(m_sup.group(1))
         except ValueError:
             pass
-
     shallow = 0
     ids_with_depth = {}
     for sid, depth in re.findall(r'(GEO-\d{3}).{0,120}?refusal[^.\n]{0,120}?(\d+(?:\.\d+)?)\s*(?:feet|ft)', t, re.IGNORECASE | re.DOTALL):
@@ -208,7 +174,6 @@ def _boring_fallback_counts(text: str, threshold_ft: float = 8.0):
                 shallow += 1
         except ValueError:
             pass
-
     pct = round(100 * shallow / (total if total else 1), 1) if total else 0.0
     return total, shallow, pct, ids_with_depth
 
@@ -218,8 +183,6 @@ def count_boring_refusals_under_8ft(text: str, threshold_ft: float = 8.0):
         return _boring_fallback_counts(text, threshold_ft)
     return total, shallow, pct, ids
 
-# -THE APP please work!!! Please workkk! please workkkk!😭
-
 st.set_page_config(page_title="Geotechnical Report Analyzer", layout="centered")
 st.title("📑 Geotechnical Report Analyzer (Borings Only)")
 
@@ -228,19 +191,10 @@ uploaded_file = st.file_uploader("Upload a PDF or DOCX", type=["pdf", "docx"])
 if uploaded_file:
     st.success(f"Uploaded: {uploaded_file.name}")
     with st.spinner("Reading and analyzing..."):
-        if uploaded_file.name.lower().endswith(".pdf"):
-            text = extract_text_pdf(uploaded_file)
-        else:
-            text = extract_text_docx(uploaded_file)
-
-        # USCS / drainage
+        text = extract_text_pdf(uploaded_file) if uploaded_file.name.lower().endswith(".pdf") else extract_text_docx(uploaded_file)
         uscs_df = extract_uscs_frequencies(text, collapse_compounds=True)
         drainage = drainage_from_uscs_percentages(uscs_df, text)
-
-        # Groundwater
         gw = find_groundwater(text)
-
-        # Borings: refusal (< 8 ft)
         bor_total, bor_shallow, bor_pct, bor_depths = count_boring_refusals_under_8ft(text, threshold_ft=8.0)
 
     st.header("📊 Analysis Results")
@@ -257,6 +211,6 @@ if uploaded_file:
     if uscs_df.empty:
         st.write("No USCS codes detected in extracted text.")
     else:
-        st.dataframe(uscs_df, use_container_width=True)
+        st.dataframe(uscs_df[["USCS Code","Soil Name","Percent"]], use_container_width=True)
 
     st.info("Answers are inferred from extracted text. For high-stakes decisions, verify with boring logs/appendices.")
