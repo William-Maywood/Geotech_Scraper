@@ -6,9 +6,7 @@ import pandas as pd
 from collections import Counter
 from typing import Iterator, Tuple
 
-# ---------------------------
-# File extractors
-# ---------------------------
+# Extract the file pls
 
 def extract_text_pdf(file) -> str:
     """Fast, resilient text extraction from PDF (no OCR)."""
@@ -23,9 +21,7 @@ def extract_text_docx(file) -> str:
     doc = Document(file)
     return "\n".join(p.text for p in doc.paragraphs if p.text)
 
-# ---------------------------
-# Soil drainage helpers
-# ---------------------------
+# Soild Drain stuff
 
 USCS_DRAIN = {
   "GW":"Excellent","SW":"Excellent","GP":"Good","SP":"Good",
@@ -49,9 +45,7 @@ def assess_drainage(text: str) -> str:
         return "Likely well-draining (keyword inference)"
     return "Unclear – needs review"
 
-# ---------------------------
-# Groundwater detector
-# ---------------------------
+# Grounwater detect pls
 
 def find_groundwater(text: str) -> str:
     t = text.lower()
@@ -71,8 +65,7 @@ def find_groundwater(text: str) -> str:
     return "No"
 
 # ---------------------------
-# USCS parsing + drainage summary
-# ---------------------------
+# tHE SOIL STUFF
 
 USCS_NAMES = {
     "GW":"Well-graded gravel", "GP":"Poorly graded gravel",
@@ -147,8 +140,7 @@ def drainage_from_uscs_percentages(uscs_df: pd.DataFrame, fallback_text: str) ->
     )
 
 # ---------------------------
-# Borings only: sections + shallow refusal counters (with fallback)
-# ---------------------------
+# Borings only: PLEASE WORKKKK WRFNWEJF!
 
 def iter_boring_sections(text: str) -> Iterator[Tuple[str, str]]:
     """
@@ -226,9 +218,7 @@ def count_boring_refusals_under_8ft(text: str, threshold_ft: float = 8.0):
         return _boring_fallback_counts(text, threshold_ft)
     return total, shallow, pct, ids
 
-# ---------------------------
-# Streamlit app
-# ---------------------------
+# -THE APP please work!!! Please workkk! please workkkk!😭
 
 st.set_page_config(page_title="Geotechnical Report Analyzer", layout="centered")
 st.title("📑 Geotechnical Report Analyzer (Borings Only)")
