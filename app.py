@@ -202,7 +202,10 @@ if uploaded_file:
     st.write(f"**Groundwater Shallower Than 5 ft?** → `{gw}`")
 
     st.subheader("📏 Refusal Summary (< 8 ft) — Borings")
-    st.write(f"`{bor_shallow} of {bor_total}` ({bor_pct}%)")
+    if bor_total == 0:
+        st.write("Boring log appendices are not retrievable with this tool.")
+    else:
+        st.write(f"`{bor_shallow} of {bor_total}` ({bor_pct}%)")
 
     if st.checkbox("Show parsed refusal depths (debug)"):
         st.write({"borings": bor_depths})
